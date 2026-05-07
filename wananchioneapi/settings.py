@@ -36,7 +36,43 @@ INSTALLED_APPS = [
     "corsheaders",
     "cloudinary",
     # Local apps
+    # Users and authentication
     "accounts",
+    # Accounting Apps
+    "glaccounts",
+    "journalbatches",
+    "journalentries",
+    "financials",
+    "paymentaccounts",
+    # Mpesa
+    "mpesa",
+    # Savings
+    "savingtypes",
+    "savings",
+    "savingsdeposits",
+    # Ventures
+    "venturetypes",
+    "ventureaccounts",
+    "venturedeposits",
+    "venturepayments",
+    # Loans
+    "loanproducts",
+    "loanapplications",
+    "loanaccounts",
+    "loanpayments",
+    "loandisbursements",
+    "loanpenalties",
+    "existingloans",
+    "existingloanspayments",
+    # Guarantors
+    "guarantors",
+    "guaranteerequests",
+    # Fees
+    "feetypes",
+    "feeaccounts",
+    "feepayments",
+    # Transactions
+    "transactions",
 ]
 
 MIDDLEWARE = [
