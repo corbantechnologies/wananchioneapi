@@ -63,7 +63,7 @@ class User(
     email = models.EmailField(unique=True)
     gender = models.CharField(max_length=255)
     dob = models.DateField(blank=True, null=True)
-    avatar = CloudinaryField("sprout_avatars", blank=True, null=True)
+    avatar = CloudinaryField("wananchionesacco_avatars", blank=True, null=True)
 
     # Identity
     id_type = models.CharField(max_length=255, blank=True, null=True)
