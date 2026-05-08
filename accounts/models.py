@@ -74,10 +74,6 @@ class User(
     phone = models.CharField(max_length=255, blank=True, null=True)
     county = models.CharField(max_length=255, blank=True, null=True)
 
-    # Employment
-    payroll_number = models.CharField(max_length=255, blank=True, null=True)
-    employer = models.CharField(max_length=255, blank=True, null=True)
-
     # Account status
     is_approved = models.BooleanField(default=False)
 
