@@ -28,153 +28,6 @@ def advance_date(current_date: date, frequency: str) -> date:
 # ======================================================================
 # 1. FLAT-RATE (Interest on original principal)
 # ======================================================================
-def flat_rate_fixed_payment(
-    principal: Decimal,
-    annual_rate: Decimal,
-    payment_per_month: Decimal,
-    start_date: date = date.today(),
-    repayment_frequency: str = "monthly",
-    max_months: int = 360,
-    processing_fee_total: Decimal = Decimal("0"),
-) -> Dict:
-    """
-    Fixed monthly payment → calculate term (Flat-rate).
-    Interest is always computed on the ORIGINAL principal every period —
-    this is the defining characteristic of flat-rate.
-    """
-    MONTHS_IN_PERIOD = {
-        "daily": Decimal("1") / 30,
-        "weekly": Decimal("1") / 4,
-        "biweekly": Decimal("0.5"),
-        "monthly": Decimal("1"),
-        "quarterly": Decimal("3"),
-        "annually": Decimal("12"),
-    }
-
-    if repayment_frequency not in MONTHS_IN_PERIOD:
-        pass  # Defaults to monthly below
-
-    months_per_period = MONTHS_IN_PERIOD.get(repayment_frequency, Decimal("1"))
-
-    rate = annual_rate / Decimal("100")
-    payment_this_period = (payment_per_month * months_per_period).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
-
-    # FLAT RATE: interest per period is always based on the ORIGINAL principal,
-    # not on the reducing balance. This is constant throughout the loan.
-    interest_per_month = (principal * rate / Decimal("12")).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
-    interest_this_period = (interest_per_month * months_per_period).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
-    principal_per_period = (payment_this_period - interest_this_period).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
-
-    if principal_per_period <= Decimal("0"):
-        raise ValueError(
-            "Monthly payment is too low to cover the flat-rate interest. "
-            f"Minimum payment must exceed {interest_this_period} per period."
-        )
-
-    # Total projected interest and periods
-    total_periods = int((principal / principal_per_period).quantize(
-        Decimal("1"), ROUND_HALF_UP
-    ))
-    if total_periods < 1:
-        total_periods = 1
-    total_interest = (interest_this_period * Decimal(total_periods)).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
-
-    balance = principal  # Principal-only balance (for tracking principal paydown)
-    remaining_interest = total_interest  # Remaining flat-rate interest still owed
-    schedule: List[dict] = []
-
-    cur_date = advance_date(start_date, repayment_frequency)
-    months_elapsed = Decimal("0")
-    periods_done = 0
-
-    while balance > Decimal("0.01") and periods_done < total_periods:
-        due = cur_date
-
-        # Last period: absorb any rounding remainder
-        if periods_done == total_periods - 1:
-            principal_due = balance
-            interest_due = remaining_interest
-        else:
-            principal_due = min(principal_per_period, balance)
-            interest_due = interest_this_period
-
-        total_due = principal_due + interest_due
-        balance = (balance - principal_due).quantize(Decimal("0.01"), ROUND_HALF_UP)
-        remaining_interest = (remaining_interest - interest_due).quantize(
-            Decimal("0.01"), ROUND_HALF_UP
-        )
-
-        # balance_after = remaining principal + remaining interest (total still owed,
-        # excluding fees which are tracked separately per-row)
-        balance_after_total = balance + remaining_interest
-
-        schedule.append(
-            {
-                "due_date": due.isoformat(),
-                "installment_code": generate_installment_code(),
-                "principal_due": float(principal_due),
-                "interest_due": float(interest_due),
-                "fee_due": 0.0,
-                "total_due": float(total_due),
-                "balance_after": float(balance_after_total),
-                "is_paid": False,
-                "fee_paid": 0.0,
-                "interest_paid": 0.0,
-                "principal_paid": 0.0,
-                "amount_paid": 0.0,
-            }
-        )
-
-        cur_date = advance_date(cur_date, repayment_frequency)
-        months_elapsed += months_per_period
-        periods_done += 1
-
-    term_months = int(months_elapsed.quantize(Decimal("1"), ROUND_HALF_UP))
-
-    # Distribute processing fee evenly across all installments
-    num_payments = len(schedule)
-    if num_payments > 0:
-        fee_per_payment = (processing_fee_total / Decimal(num_payments)).quantize(
-            Decimal("0.01"), ROUND_HALF_UP
-        )
-        remaining_fee = processing_fee_total
-        for idx, entry in enumerate(schedule):
-            # Last row gets any rounding residual
-            if idx == num_payments - 1:
-                actual_fee = remaining_fee
-            else:
-                actual_fee = fee_per_payment
-            entry["fee_due"] = float(actual_fee)
-            entry["total_due"] = float(
-                Decimal(str(entry["total_due"])) + actual_fee
-            )
-            # Add fee to balance_after so it reflects full outstanding obligation
-            entry["balance_after"] = float(
-                Decimal(str(entry["balance_after"])) + (remaining_fee - actual_fee)
-            )
-            remaining_fee -= actual_fee
-
-    return {
-        "term_months": term_months,
-        "total_interest": float(total_interest.quantize(Decimal("0.01"))),
-        "total_processing_fee": float(processing_fee_total),
-        "total_repayment": float(
-            (principal + total_interest + processing_fee_total).quantize(
-                Decimal("0.01")
-            )
-        ),
-        "schedule": schedule,
-    }
 
 
 def flat_rate_fixed_term(
@@ -203,8 +56,9 @@ def flat_rate_fixed_term(
     months_per_period = MONTHS_IN_PERIOD.get(repayment_frequency, Decimal("1"))
 
     rate = annual_rate / Decimal("100")
-    # FLAT RATE: total interest = principal × annual_rate × term / 12 (on original principal)
-    total_interest = (principal * rate * Decimal(term_months) / Decimal("12")).quantize(
+    # FLAT RATE (Total Period Fixed Charge): total interest = principal × rate
+    # The rate is treated as a one-time total charge for the loan, regardless of term length.
+    total_interest = (principal * rate).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
     # total_repayment excludes processing_fee here; fee is added separately per row and in output
