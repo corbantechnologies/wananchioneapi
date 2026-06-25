@@ -41,8 +41,11 @@ class LoanAccount(UniversalIdModel, TimeStampedModel, ReferenceModel):
         max_length=20, unique=True, default=generate_loan_account_number
     )
     principal = models.DecimalField(max_digits=15, decimal_places=2)
-    outstanding_balance = models.DecimalField(max_digits=15, decimal_places=2)
-    total_loan_amount = models.DecimalField(max_digits=15, decimal_places=2)
+    # Computed by save() as: principal + total_interest_accrued + processing_fee - total_amount_paid
+    # Do NOT set this directly on create() — it will be overwritten.
+    outstanding_balance = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    # Computed by save() as: principal + total_interest_accrued + processing_fee
+    total_loan_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     start_date = models.DateField(blank=True, null=True)
     end_date = models.DateField(blank=True, null=True)
     last_interest_calulation = models.DateField(null=True, blank=True)
@@ -66,6 +69,17 @@ class LoanAccount(UniversalIdModel, TimeStampedModel, ReferenceModel):
         if not self.start_date:
             self.start_date = timezone.now().date()
 
+        # outstanding_balance is ALWAYS derived here — any value passed to the
+        # constructor is overwritten. Do NOT rely on setting it directly.
+        #
+        # For FLAT RATE loans:
+        #   total_interest_accrued is set once at loan creation to the full
+        #   projected interest for the entire term and must NOT be mutated by
+        #   any background accrual job. Changing it mid-loan will corrupt the
+        #   outstanding_balance and clearance amounts.
+        #
+        # For REDUCING BALANCE loans:
+        #   total_interest_accrued accumulates as interest is recognised per period.
         self.total_loan_amount = (
             self.principal
             + Decimal(str(self.total_interest_accrued))

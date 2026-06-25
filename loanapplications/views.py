@@ -358,7 +358,10 @@ class ApproveOrDeclineLoanApplicationView(generics.RetrieveUpdateAPIView):
                     product=instance.product,
                     application=instance,
                     principal=instance.requested_amount,
-                    outstanding_balance=instance.projection_snapshot["total_repayment"],
+                    # outstanding_balance is NOT set here — LoanAccount.save()
+                    # always derives it as:
+                    #   principal + total_interest_accrued + processing_fee - total_amount_paid
+                    # Passing it would be silently overwritten.
                     projection_snapshot=instance.projection_snapshot,
                     processing_fee=instance.processing_fee,
                     start_date=instance.start_date,

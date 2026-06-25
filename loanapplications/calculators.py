@@ -37,7 +37,11 @@ def flat_rate_fixed_payment(
     max_months: int = 360,
     processing_fee_total: Decimal = Decimal("0"),
 ) -> Dict:
-    """Fixed monthly payment → calculate term (Flat-rate)"""
+    """
+    Fixed monthly payment → calculate term (Flat-rate).
+    Interest is always computed on the ORIGINAL principal every period —
+    this is the defining characteristic of flat-rate.
+    """
     MONTHS_IN_PERIOD = {
         "daily": Decimal("1") / 30,
         "weekly": Decimal("1") / 4,
@@ -48,8 +52,7 @@ def flat_rate_fixed_payment(
     }
 
     if repayment_frequency not in MONTHS_IN_PERIOD:
-        # Default or raise
-        pass
+        pass  # Defaults to monthly below
 
     months_per_period = MONTHS_IN_PERIOD.get(repayment_frequency, Decimal("1"))
 
@@ -58,29 +61,62 @@ def flat_rate_fixed_payment(
         Decimal("0.01"), ROUND_HALF_UP
     )
 
-    balance = principal
-    total_interest = Decimal("0")
-    schedule: List[dict] = []
-
-    # Start first payment 1 period after start_date
-    cur_date = advance_date(start_date, repayment_frequency)
-
-    months_elapsed = Decimal("0")
-
+    # FLAT RATE: interest per period is always based on the ORIGINAL principal,
+    # not on the reducing balance. This is constant throughout the loan.
     interest_per_month = (principal * rate / Decimal("12")).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
-    interest_this_period = interest_per_month * months_per_period
+    interest_this_period = (interest_per_month * months_per_period).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
+    principal_per_period = (payment_this_period - interest_this_period).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
 
-    while balance > Decimal("0.01") and months_elapsed < max_months:
+    if principal_per_period <= Decimal("0"):
+        raise ValueError(
+            "Monthly payment is too low to cover the flat-rate interest. "
+            f"Minimum payment must exceed {interest_this_period} per period."
+        )
+
+    # Total projected interest and periods
+    total_periods = int((principal / principal_per_period).quantize(
+        Decimal("1"), ROUND_HALF_UP
+    ))
+    if total_periods < 1:
+        total_periods = 1
+    total_interest = (interest_this_period * Decimal(total_periods)).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
+
+    balance = principal  # Principal-only balance (for tracking principal paydown)
+    remaining_interest = total_interest  # Remaining flat-rate interest still owed
+    schedule: List[dict] = []
+
+    cur_date = advance_date(start_date, repayment_frequency)
+    months_elapsed = Decimal("0")
+    periods_done = 0
+
+    while balance > Decimal("0.01") and periods_done < total_periods:
         due = cur_date
 
-        interest_due = min(interest_this_period, payment_this_period)
-        principal_due = min(payment_this_period - interest_due, balance)
-        total_due = interest_due + principal_due
+        # Last period: absorb any rounding remainder
+        if periods_done == total_periods - 1:
+            principal_due = balance
+            interest_due = remaining_interest
+        else:
+            principal_due = min(principal_per_period, balance)
+            interest_due = interest_this_period
 
+        total_due = principal_due + interest_due
         balance = (balance - principal_due).quantize(Decimal("0.01"), ROUND_HALF_UP)
-        total_interest += interest_due
+        remaining_interest = (remaining_interest - interest_due).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+
+        # balance_after = remaining principal + remaining interest (total still owed,
+        # excluding fees which are tracked separately per-row)
+        balance_after_total = balance + remaining_interest
 
         schedule.append(
             {
@@ -90,7 +126,7 @@ def flat_rate_fixed_payment(
                 "interest_due": float(interest_due),
                 "fee_due": 0.0,
                 "total_due": float(total_due),
-                "balance_after": float(balance),
+                "balance_after": float(balance_after_total),
                 "is_paid": False,
                 "fee_paid": 0.0,
                 "interest_paid": 0.0,
@@ -101,19 +137,32 @@ def flat_rate_fixed_payment(
 
         cur_date = advance_date(cur_date, repayment_frequency)
         months_elapsed += months_per_period
+        periods_done += 1
 
     term_months = int(months_elapsed.quantize(Decimal("1"), ROUND_HALF_UP))
 
+    # Distribute processing fee evenly across all installments
     num_payments = len(schedule)
     if num_payments > 0:
         fee_per_payment = (processing_fee_total / Decimal(num_payments)).quantize(
             Decimal("0.01"), ROUND_HALF_UP
         )
-        for entry in schedule:
-            entry["fee_due"] = float(fee_per_payment)
+        remaining_fee = processing_fee_total
+        for idx, entry in enumerate(schedule):
+            # Last row gets any rounding residual
+            if idx == num_payments - 1:
+                actual_fee = remaining_fee
+            else:
+                actual_fee = fee_per_payment
+            entry["fee_due"] = float(actual_fee)
             entry["total_due"] = float(
-                Decimal(str(entry["total_due"])) + fee_per_payment
+                Decimal(str(entry["total_due"])) + actual_fee
             )
+            # Add fee to balance_after so it reflects full outstanding obligation
+            entry["balance_after"] = float(
+                Decimal(str(entry["balance_after"])) + (remaining_fee - actual_fee)
+            )
+            remaining_fee -= actual_fee
 
     return {
         "term_months": term_months,
@@ -136,7 +185,12 @@ def flat_rate_fixed_term(
     repayment_frequency: str = "monthly",
     processing_fee_total: Decimal = Decimal("0"),
 ) -> Dict:
-    """Fixed term → calculate monthly payment (Flat-rate)"""
+    """
+    Fixed term → calculate monthly payment (Flat-rate).
+    Interest is computed on the ORIGINAL principal for every period.
+    `balance_after` reflects total remaining obligation (principal + interest + fee)
+    so it is consistent with what the waterfall and clearance service read.
+    """
     MONTHS_IN_PERIOD = {
         "daily": Decimal("1") / 30,
         "weekly": Decimal("1") / 4,
@@ -149,44 +203,67 @@ def flat_rate_fixed_term(
     months_per_period = MONTHS_IN_PERIOD.get(repayment_frequency, Decimal("1"))
 
     rate = annual_rate / Decimal("100")
+    # FLAT RATE: total interest = principal × annual_rate × term / 12 (on original principal)
     total_interest = (principal * rate * Decimal(term_months) / Decimal("12")).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
+    # total_repayment excludes processing_fee here; fee is added separately per row and in output
     total_repayment = principal + total_interest
 
     total_periods = int(Decimal(term_months) / months_per_period)
     if total_periods < 1:
         total_periods = 1
 
-    payment_per_period = (total_repayment / Decimal(total_periods)).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
+    # Each period: equal slice of principal + equal slice of interest
     interest_per_period = (total_interest / Decimal(total_periods)).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
+    principal_per_period = (principal / Decimal(total_periods)).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
+    payment_per_period = principal_per_period + interest_per_period
     fee_per_period = (processing_fee_total / Decimal(total_periods)).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
-    principal_per_period = payment_per_period - interest_per_period
 
-    balance = principal
+    # Track remaining principal and remaining interest separately for accurate balance_after
+    remaining_principal = principal
+    remaining_interest = total_interest
+    remaining_fee = processing_fee_total
     schedule: List[dict] = []
 
     # Start first payment 1 period after start_date
     cur_date = advance_date(start_date, repayment_frequency)
 
-    for _ in range(total_periods):
+    for period_idx in range(total_periods):
         due = cur_date
-        if balance <= principal_per_period:
-            principal_due = balance
-            interest_due = interest_per_period
-            total_due = principal_due + interest_due
-        else:
-            principal_due = principal_per_period
-            interest_due = interest_per_period
-            total_due = payment_per_period
+        is_last = (period_idx == total_periods - 1)
 
-        balance = (balance - principal_due).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        # Last period absorbs any rounding residuals
+        if is_last:
+            principal_due = remaining_principal
+            interest_due = remaining_interest
+            fee_due = remaining_fee
+        else:
+            principal_due = min(principal_per_period, remaining_principal)
+            interest_due = interest_per_period
+            fee_due = fee_per_period
+
+        total_due = principal_due + interest_due  # before fee
+
+        remaining_principal = (remaining_principal - principal_due).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+        remaining_interest = (remaining_interest - interest_due).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+        remaining_fee = (remaining_fee - fee_due).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+
+        # balance_after = total still outstanding after this payment
+        # (remaining principal + remaining interest + remaining fee)
+        balance_after_total = remaining_principal + remaining_interest + remaining_fee
 
         schedule.append(
             {
@@ -194,9 +271,9 @@ def flat_rate_fixed_term(
                 "installment_code": generate_installment_code(),
                 "principal_due": float(principal_due),
                 "interest_due": float(interest_due),
-                "fee_due": float(fee_per_period),
-                "total_due": float(total_due + fee_per_period),
-                "balance_after": float(balance),
+                "fee_due": float(fee_due),
+                "total_due": float(total_due + fee_due),
+                "balance_after": float(balance_after_total),
                 "is_paid": False,
                 "fee_paid": 0.0,
                 "interest_paid": 0.0,
